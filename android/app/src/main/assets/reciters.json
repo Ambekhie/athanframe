@@ -1,0 +1,148 @@
+{
+  "reciters": [
+    {
+      "name": "AbdulAzeez Al-Ahmad",
+      "slug": "abdulazeez-al-ahmad"
+    },
+    {
+      "name": "AbdulBaset AbdulSamad",
+      "slug": "abdulbaset-abdulsamad"
+    },
+    {
+      "name": "AbdulBaset AbdulSamad (Mujawwad)",
+      "slug": "abdulbaset-abdulsamad-mujawwad"
+    },
+    {
+      "name": "AbdulBaset AbdulSamad (Murattal)",
+      "slug": "abdulbaset-abdulsamad-murattal"
+    },
+    {
+      "name": "AbdulBaset w/English (Pickthall)",
+      "slug": "abdulbaset-wenglish-pickthall"
+    },
+    {
+      "name": "AbdulBaset w/Urdu",
+      "slug": "abdulbaset-wurdu"
+    },
+    {
+      "name": "Abdul Rasheed Soofy",
+      "slug": "abdul-rasheed-soofy"
+    },
+    {
+      "name": "Abdullah Al-Khayat",
+      "slug": "abdullah-al-khayat"
+    },
+    {
+      "name": "Abdullah Basfar",
+      "slug": "abdullah-basfar"
+    },
+    {
+      "name": "Abdullah Ali Jabir",
+      "slug": "abdullah-ali-jabir"
+    },
+    {
+      "name": "Abdur Rahman As-Sudais",
+      "slug": "abdur-rahman-as-sudais"
+    },
+    {
+      "name": "Abu Bakr Al-Shatiri",
+      "slug": "abu-bakr-al-shatiri"
+    },
+    {
+      "name": "Adel Kalbani",
+      "slug": "adel-kalbani"
+    },
+    {
+      "name": "Ahmed ibn Ali al-Ajmy",
+      "slug": "ahmed-ibn-ali-al-ajmy"
+    },
+    {
+      "name": "Ghassan Al-Shorbagy",
+      "slug": "ghassan-al-shorbagy"
+    },
+    {
+      "name": "Ibrahim Al-Akhdar",
+      "slug": "ibrahim-al-akhdar"
+    },
+    {
+      "name": "Khalid Al-Jaleel",
+      "slug": "khalid-al-jaleel"
+    },
+    {
+      "name": "Khalifa Al Tunaiji",
+      "slug": "khalifa-al-tunaiji"
+    },
+    {
+      "name": "Maher Al-Mueaqly",
+      "slug": "maher-al-mueaqly"
+    },
+    {
+      "name": "Mahmoud Ali Albanna",
+      "slug": "mahmoud-ali-albanna"
+    },
+    {
+      "name": "Mahmoud Khaleel Al-Husary",
+      "slug": "mahmoud-khaleel-al-husary"
+    },
+    {
+      "name": "Mishari Rashid Al-Afasy",
+      "slug": "mishari-rashid-al-afasy"
+    },
+    {
+      "name": "Mishari w/English (Saheeh)",
+      "slug": "mishari-wenglish-saheeh"
+    },
+    {
+      "name": "Mohammad Al-Tablaaway",
+      "slug": "mohammad-al-tablaaway"
+    },
+    {
+      "name": "Mohammad Ayyub",
+      "slug": "mohammad-ayyub"
+    },
+    {
+      "name": "Mostafa Ismaeel",
+      "slug": "mostafa-ismaeel"
+    },
+    {
+      "name": "Muhammad Siddiq Al-Minshawi",
+      "slug": "muhammad-siddiq-al-minshawi"
+    },
+    {
+      "name": "Noreen Muhammad Siddiq",
+      "slug": "noreen-muhammad-siddiq"
+    },
+    {
+      "name": "Omar Al-Qazabri",
+      "slug": "omar-al-qazabri"
+    },
+    {
+      "name": "Saad Al-Ghamdi",
+      "slug": "saad-al-ghamdi"
+    },
+    {
+      "name": "Saud Al-Shuraim",
+      "slug": "saud-al-shuraim"
+    },
+    {
+      "name": "Salah Bukhatir",
+      "slug": "salah-bukhatir"
+    },
+    {
+      "name": "Tawfeeq As Sayegh",
+      "slug": "tawfeeq-as-sayegh"
+    },
+    {
+      "name": "Wadi Al Yamani",
+      "slug": "wadi-al-yamani"
+    },
+    {
+      "name": "Waheed Qasmi w/Urdu",
+      "slug": "waheed-qasmi-wurdu"
+    },
+    {
+      "name": "Yasser Ad-Dussary",
+      "slug": "yasser-ad-dussary"
+    }
+  ]
+}

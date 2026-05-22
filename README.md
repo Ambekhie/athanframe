@@ -9,7 +9,7 @@ The device is an Android 11 tablet running Masjidal's custom kiosk app. It ships
 | Subproject | Status | Description |
 |---|---|---|
 | [`pwa-bridge/`](./pwa-bridge/) | ✅ working | Bash CLI + Python (FastAPI) HTTP bridge + Progressive Web App. Runs on any Mac/Linux machine on the same Wi-Fi as the frame. Auto-discovers the frame's IP on first run. Phone gets a polished installable web app. |
-| `android/` | planned | On-frame Android service. One-time install onto the frame itself via ADB, then no host machine is required ever again. Phone talks directly to `http://athanframe.local:8080`. |
+| [`android/`](./android/) | 🚧 alpha | On-frame Android service. One-time install onto the frame itself via ADB, then no host machine is required ever again. Phone talks directly to `http://<frame-ip>:8080`. |
 
 Start with [`pwa-bridge/`](./pwa-bridge/) — it works today.
 

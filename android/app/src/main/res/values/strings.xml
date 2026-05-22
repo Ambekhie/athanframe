@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Athan Frame Bridge</string>
+    <string name="notification_channel_name">Bridge service</string>
+    <string name="notification_channel_desc">Keeps the Athan Frame remote-control bridge running.</string>
+    <string name="notification_title">Athan Frame Bridge is running</string>
+    <string name="notification_text">Open %1$s on your phone.</string>
+    <string name="status_running">Bridge is running</string>
+    <string name="status_stopped">Bridge is stopped</string>
+    <string name="status_no_masjidal">The Masjidal app is not installed on this device.</string>
+    <string name="open_url_hint">Open this URL on your phone (same Wi-Fi):</string>
+    <string name="add_to_home_hint">Then Share → Add to Home Screen.</string>
+    <string name="btn_start">Start bridge</string>
+    <string name="btn_stop">Stop bridge</string>
+</resources>

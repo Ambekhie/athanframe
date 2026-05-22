@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Mirrors the Frame's palette: cream + navy + gold -->
+    <color name="cream">#F4ECD8</color>
+    <color name="cream_warm">#EDE2C4</color>
+    <color name="navy">#163A78</color>
+    <color name="navy_dark">#0F295C</color>
+    <color name="gold">#C9A96A</color>
+    <color name="ink">#1A1F2C</color>
+    <color name="white">#FFFFFF</color>
+</resources>
