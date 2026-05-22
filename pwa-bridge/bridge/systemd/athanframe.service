@@ -1,0 +1,44 @@
+# systemd unit for the Athan Frame bridge.
+#
+# Installation (handled by ../install-as-service.sh):
+#   - Place this file at /etc/systemd/system/athanframe.service after
+#     substituting the {{INSTALL_DIR}} and {{USER}} placeholders.
+#   - sudo systemctl daemon-reload
+#   - sudo systemctl enable --now athanframe
+#
+# Verify:
+#   systemctl status athanframe
+#   journalctl -u athanframe -f
+
+[Unit]
+Description=Athan Frame bridge (FastAPI + PWA over LAN)
+Documentation=https://github.com/Ambekhie/athanframe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{USER}}
+Group={{USER}}
+WorkingDirectory={{INSTALL_DIR}}/bridge
+Environment=PYTHONUNBUFFERED=1
+# FRAME_IP can be set here to skip auto-discovery on every boot:
+#   Environment=FRAME_IP=192.168.1.42
+ExecStart={{INSTALL_DIR}}/bridge/.venv/bin/uvicorn server:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5
+# Give the network a chance to be ready before the first start
+TimeoutStartSec=60
+
+# Logging to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=athanframe
+
+# Light sandboxing — the bridge only needs network + its own dir.
+ProtectSystem=full
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
