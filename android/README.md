@@ -1,115 +1,113 @@
-# Athan Frame — on-device bridge (Android)
+# Athan Frame — on-device bridge (Android) — EXPERIMENTAL
 
-This is the **on-frame** version of the bridge. Once installed, the Athan Frame hosts the HTTP server and PWA itself. No host machine (Mac, PC, Pi) is required for daily use.
+> ⚠️ **This subproject does not work as intended on the production Masjidal Athan Frame.** It is kept in the repo as a learning artifact documenting why an unsigned third-party app cannot self-host the bridge on a locked-down kiosk device. **Use [`pwa-bridge/`](../pwa-bridge/) instead** — it works, is stable, and gives you 100% of the functionality.
 
-## How it differs from `pwa-bridge/`
+## Goal of this experiment
 
-| | pwa-bridge | android (this) |
-|---|---|---|
-| Where bridge runs | A Mac/Linux machine on the LAN | The Athan Frame itself |
-| Daily host required | yes | **no** |
-| One-time setup | run `install.sh` on your host | run `install-on-frame.sh` once on any Mac to flash the APK |
-| Updates after install | run new bridge code on host | install new APK on the frame |
-| Survives frame reboot | host stays up | yes, auto-restarts via `BOOT_COMPLETED` |
+Move the HTTP bridge **onto the Athan Frame itself** so users don't need a host machine (Mac, PC, Pi) at home. Friend installs once via ADB, then their phone talks directly to `http://<frame-ip>:8080` forever after.
 
-## Architecture
+## What was built
 
-```
-┌─────────────┐    HTTP    ┌──────────────────────────────────┐
-│ iPhone PWA  │ ─────────▶ │ Athan Frame (Android 11)         │
-└─────────────┘            │                                  │
-                           │  com.athanframe.bridge (this app)│
-                           │   ├─ BridgeService (foreground)  │
-                           │   ├─ HttpServer (NanoHTTPD)      │
-                           │   ├─ Bundled PWA assets          │
-                           │   └─ IntentDispatcher            │
-                           │           │                      │
-                           │           │ sendBroadcast        │
-                           │           ▼                      │
-                           │  com.masjidal.athanframe         │
-                           │   └─ ScheduleReceiver            │
-                           └──────────────────────────────────┘
-```
+A Kotlin Android app (`com.athanframe.bridge`) with:
 
-## Build
+- Foreground service hosting an embedded NanoHTTPD server on port 8080
+- All API endpoints mirroring the Python bridge (`/api/play`, `/api/pause`, etc.)
+- The PWA bundled inside the APK (`assets/index.html`, `app.js`, `style.css`, icons)
+- Reciter catalog baked at build time from Masjidal's S3
+- `MainActivity` showing the LAN URL + QR code on the frame's screen
+- `BootReceiver` for restart-on-boot
+- `install-on-frame.sh` for one-command install via ADB
 
-Requires:
-- JDK 17 (`brew install openjdk@17`)
-- Android SDK (cmdline-tools at minimum, with platform 34 + build-tools 34.0.0)
-- Gradle (either install with `brew install gradle` or generate `gradlew` via `gradle wrapper`)
-- `adb` (`brew install --cask android-platform-tools`)
+The HTTP server, PWA serving, reciter catalog, and `MainActivity` all work correctly. The build is clean (`./gradlew :app:assembleDebug` succeeds, APK is ~4 MB). What doesn't work is the part that actually drives the Masjidal app.
+
+## Why it doesn't work
+
+The Masjidal Athan Frame is a **locked-down kiosk device**. Masjidal's app is the Device Admin and runs in Android's Lock Task Mode — a feature designed precisely to prevent third-party software from doing what this experiment tried to do. We hit every wall the Android security model erects:
+
+| Approach we tried | Why it failed |
+|---|---|
+| `Context.sendBroadcast()` to ScheduleReceiver | Masjidal's receiver is `exported=false`. Android 11+ blocks cross-package broadcasts to non-exported receivers. |
+| `Runtime.exec("am broadcast")` | The `am` command inherits our app's uid, hits the same export check. |
+| `pm grant INTERACT_ACROSS_USERS` then retry | Cross-user permission doesn't bypass the receiver-export check. |
+| Install as system app (`/system/priv-app/`) | A debug-signed APK in `/system/priv-app/` mismatches the platform signature, which can prevent `system_server` from starting cleanly. Risky for the device. |
+| `Runtime.exec("input tap")` for UI automation | `INJECT_EVENTS` is signature-only; one app cannot inject input into another app's window. `adb shell` can; we cannot. |
+| AccessibilityService (Android's official answer) | Enabling it requires opening Settings → Accessibility → Enable. **Lock Task Mode blocks Settings from opening.** |
+| UIAutomator screen-content read | Masjidal UI's constant animations prevent UIAutomator from ever reaching "idle state". |
+
+The kiosk security model isn't a bug — it's the intended behavior. The only ways past it are:
+
+1. Sign our APK with Masjidal's platform signing key (not available)
+2. Modify the device firmware to disable Lock Task Mode (real device modification, voids warranty)
+3. Drive ADB from an **external** machine that has shell privileges (which is exactly what `pwa-bridge/` does)
+
+## What worked anyway (parts you can reuse)
+
+- The Gradle/Kotlin scaffolding for an Android service hosting NanoHTTPD
+- The endpoint shapes for the HTTP API
+- The PWA-asset-bundling-into-an-APK pattern
+- The QR-code-on-device launch UX
+- The Masjidal-package detection logic
+
+If Masjidal ever releases an unlocked SKU, or you have a different (non-kiosk) Android device you want to control, this code is a working starting point.
+
+## How to verify the verdict yourself
 
 ```bash
 cd android
 ./install-on-frame.sh
 ```
 
-The script:
-1. Finds the frame on your LAN (or use `FRAME_IP_OVERRIDE=<ip>`)
-2. Builds `app-debug.apk`
-3. `adb install -r -t` onto the frame
-4. Starts `MainActivity` (which auto-starts `BridgeService`)
-5. Prints the URL your friend should open on their phone
+The script builds the APK, installs it via ADB, and starts the service. The HTTP server comes up, the PWA loads, all read endpoints work. Then call:
 
-## After install
+```bash
+curl -X POST http://<frame-ip>:8080/api/play \
+  -H 'Content-Type: application/json' \
+  -d '{"reciter":"Abdur Rahman As-Sudais","surah":"Al-Fatihah"}'
+```
 
-- The bridge listens on `http://<frame-ip>:8080`
-- A persistent notification on the frame's status bar shows the URL
-- The on-frame app's main activity displays the URL plus a QR code
-- The PWA at `/` is the same one shipped in `pwa-bridge/` — guided 3-step flow (Reciter → Surah → Player)
-- Survives reboots via `BootReceiver`
-- Auto-restarts if killed (`START_STICKY`)
+The endpoint returns `{"ok": true}` but playback does **not** start. Check logcat:
 
-## Endpoints (mirrors pwa-bridge)
+```bash
+adb -s <frame-ip>:5555 logcat | grep IntentDispatcher
+# You'll see:
+#   Permission denied: injecting event ... requires INJECT_EVENTS permission
+```
 
-| Method | Path | Notes |
-|---|---|---|
-| `GET`  | `/`, `/manifest.json`, `/static/*`, `/icon-*.png` | PWA assets bundled inside the APK |
-| `GET`  | `/api/config` | Returns `{frame_ip, has_frame, on_device:true}` |
-| `POST` | `/api/discover` | No-op on-device; returns our IP |
-| `GET`  | `/api/reciters` | Returns the 36-reciter catalog baked into the APK |
-| `GET`  | `/api/surahs` | 114 surahs |
-| `GET`  | `/api/status` | Reports whether the Masjidal package is installed |
-| `POST` | `/api/play` | `{reciter, surah}` → broadcast to Masjidal |
-| `POST` | `/api/pause`, `/api/next`, `/api/prev`, `/api/stop`, `/api/volume`, `/api/home` | Tap-based |
+That's the wall.
 
-## Known limitations
+## Recovery if you ran the broken `install-on-frame.sh` and it pushed to /system
 
-- **Tap controls** (`pause`/`next`/`prev`/`stop`/`volume`) use `Runtime.exec("input tap X Y")`. This works on the frame because it's a `userdebug` Android 11 build where the app's process has shell-level input access. On a hardened production Android device this would require an `AccessibilityService` — not implemented yet.
-- **No mDNS / `.local` discovery** in v1. The URL is `http://<frame-ip>:8080`. mDNS advertisement is planned (`MdnsAdvertiser.kt` stub).
-- **OTA risk**: if Masjidal pushes a firmware update, our app might be uninstalled along with userland. Re-run `install-on-frame.sh` to recover.
-- **Frame reboot**: the service auto-starts via `BOOT_COMPLETED`, but the frame needs to be online (connected to Wi-Fi with a valid DHCP lease) before the service can be reached.
+An earlier revision of the install script pushed the APK to `/system/priv-app/` which can leave the frame in a degraded boot state. If you ran that and the frame is misbehaving, use the recovery script:
 
-## Project layout
+```bash
+./recover-frame.sh
+```
+
+It scans the LAN for the frame, gets root, remounts `/system` writable, removes the bad system APK, and reboots. The current version of `install-on-frame.sh` does **not** push to `/system/`; it uses regular `adb install`.
+
+## Code layout
 
 ```
 android/
-├── settings.gradle.kts        # Gradle project settings
-├── build.gradle.kts           # Top-level Gradle config
-├── gradle.properties          # JVM / Android flags
-├── install-on-frame.sh        # One-command build + install
-├── app/
-│   ├── build.gradle.kts       # App module config (dependencies, SDK levels)
-│   ├── proguard-rules.pro
-│   └── src/main/
-│       ├── AndroidManifest.xml
-│       ├── kotlin/com/athanframe/bridge/
-│       │   ├── BridgeApplication.kt   # Singleton holder
-│       │   ├── BridgeService.kt       # Foreground service + lifecycle
-│       │   ├── HttpServer.kt          # NanoHTTPD routes
-│       │   ├── IntentDispatcher.kt    # sendBroadcast + input tap
-│       │   ├── SurahData.kt           # 114 surah names
-│       │   ├── NetUtils.kt            # LAN IP discovery
-│       │   ├── BootReceiver.kt        # Restart on boot
-│       │   └── MainActivity.kt        # On-device status UI + QR
-│       ├── assets/
-│       │   ├── index.html, app.js, style.css   # PWA (copied from pwa-bridge)
-│       │   ├── manifest.json
-│       │   ├── icon-{180,192,512}.png
-│       │   └── reciters.json          # Baked from Masjidal S3 at build time
-│       └── res/
-│           ├── layout/activity_main.xml
-│           ├── values/{strings,colors,themes}.xml
-│           └── xml/data_extraction_rules.xml
-└── README.md (this file)
+├── README.md                                — this file
+├── recover-frame.sh                         — recovery if you ran the old broken installer
+├── install-on-frame.sh                      — builds + adb installs (regular user-space install)
+├── settings.gradle.kts, build.gradle.kts, gradle.properties, gradlew, gradle/
+├── local.properties                         — gitignored
+└── app/
+    ├── build.gradle.kts
+    ├── proguard-rules.pro
+    └── src/main/
+        ├── AndroidManifest.xml              — foreground service + boot receiver
+        ├── kotlin/com/athanframe/bridge/
+        │   ├── BridgeApplication.kt
+        │   ├── BridgeService.kt             — works: foreground service + notification
+        │   ├── HttpServer.kt                — works: all API routes
+        │   ├── IntentDispatcher.kt          — does NOT work: tap injection denied
+        │   ├── SurahData.kt
+        │   ├── NetUtils.kt
+        │   ├── BootReceiver.kt
+        │   └── MainActivity.kt              — works (when not blocked by Lock Task)
+        ├── assets/                          — bundled PWA + reciter catalog + layout map
+        └── res/                             — icons, theme, strings
 ```

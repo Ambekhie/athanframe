@@ -8,8 +8,8 @@ The device is an Android 11 tablet running Masjidal's custom kiosk app. It ships
 
 | Subproject | Status | Description |
 |---|---|---|
-| [`pwa-bridge/`](./pwa-bridge/) | ✅ working | Bash CLI + Python (FastAPI) HTTP bridge + Progressive Web App. Runs on any Mac/Linux machine on the same Wi-Fi as the frame. Auto-discovers the frame's IP on first run. Phone gets a polished installable web app. |
-| [`android/`](./android/) | 🚧 alpha | On-frame Android service. One-time install onto the frame itself via ADB, then no host machine is required ever again. Phone talks directly to `http://<frame-ip>:8080`. |
+| [`pwa-bridge/`](./pwa-bridge/) | ✅ working | Bash CLI + Python (FastAPI) HTTP bridge + Progressive Web App. Runs on any Mac/Linux machine on the same Wi-Fi as the frame. Auto-discovers the frame's IP on first run. Phone gets a polished installable web app. **Use this.** |
+| [`android/`](./android/) | ❌ experimental, doesn't work | On-frame Android app. The HTTP server / PWA hosting works, but driving the Masjidal app from on-device is blocked by Android 11+ security on this kiosk device. See [`android/README.md`](./android/README.md) for the detailed walls hit. Kept as a learning artifact. |
 
 Start with [`pwa-bridge/`](./pwa-bridge/) — it works today.
 

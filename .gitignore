@@ -14,11 +14,12 @@ pwa-bridge/bridge/reciters_cache.json
 # Node (future)
 node_modules/
 
-# Android build outputs (future)
+# Android build outputs
 android/.gradle/
 android/app/build/
 android/build/
 android/local.properties
+android/captures/
 *.apk
 !pwa-bridge/**/*.apk
 
