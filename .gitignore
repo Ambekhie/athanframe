@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.python-version
+
+# Bridge runtime files (per-user, regenerate at runtime)
+pwa-bridge/bridge/config.json
+pwa-bridge/bridge/reciters_cache.json
+
+# Node (future)
+node_modules/
+
+# Android build outputs (future)
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+*.apk
+!pwa-bridge/**/*.apk
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Temp files
+/tmp/
+*.tmp

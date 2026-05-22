@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# athanframe — remote control for the Masjidal Athan Frame via ADB
+#
+# Prereqs: adb installed, frame on the same LAN with ADB-over-WiFi (port 5555)
+# Configure the frame's IP via env var or default below.
+#
+# Strategy:
+#   * `play`  -> fires a single Android broadcast intent at the app's
+#                ScheduleReceiver, which triggers Quran playback directly.
+#                Robust against UI changes; one round-trip; no taps.
+#   * pause / next / prev / vol / stop -> still UI taps, because those
+#     controls are method calls on the live QuranPlayer view object and
+#     have no broadcast surface. Coordinates may need re-mapping after a
+#     Masjidal UI update.
+
+set -euo pipefail
+
+FRAME_IP="${FRAME_IP:-}"
+FRAME="${FRAME_IP}:5555"
+
+PKG="com.masjidal.athanframe"
+SCHEDULE_RECEIVER="${PKG}/${PKG}.schedular.ScheduleReceiver"
+
+# Constants.ALARM_TYPE from the decompiled app:
+#   1 = QURAN, 2 = ADHKAR, 3 = RADIO, 4 = OTHER
+ALARM_TYPE_QURAN=1
+
+# --- helpers ---------------------------------------------------------------
+
+ensure_connected() {
+  if ! adb devices | grep -q "^${FRAME}.*device$"; then
+    echo "Connecting to ${FRAME}..."
+    adb connect "${FRAME}" >/dev/null
+    sleep 0.5
+  fi
+}
+
+tap()   { adb -s "${FRAME}" shell input tap "$1" "$2"; sleep "${3:-1}"; }
+focus() { adb -s "${FRAME}" shell dumpsys window | grep mCurrentFocus | sed 's/^[[:space:]]*//'; }
+shot()  { adb -s "${FRAME}" exec-out screencap -p > "${1:-/tmp/athanframe_screen.png}"; echo "Saved ${1:-/tmp/athanframe_screen.png}"; }
+
+# UI coordinates (1280x800). Re-map if Masjidal updates the UI.
+PLUS_BUTTON=(52 705)
+QURAN_TILE=(640 220)
+CLOSE_BTN=(1224 33)
+BACK_BTN=(40 33)
+PLAY_PAUSE=(640 584)
+PREV_SURAH=(456 584)
+NEXT_SURAH=(824 584)
+VOL_UP=(1205 260)
+VOL_DOWN=(1205 520)
+
+# --- reciter / surah name resolution --------------------------------------
+#
+# The broadcast accepts the full display name as a string (the app does its
+# own slug conversion to fetch audio from S3). These shortcuts expand the
+# friendly tokens used on the command line into the names the app expects.
+
+resolve_reciter() {
+  case "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" in
+    SUDAIS)         echo "Abdur Rahman As-Sudais" ;;
+    SHATIRI)        echo "Abu Bakr Al-Shatiri" ;;
+    BASFAR)         echo "Abdullah Basfar" ;;
+    ABDULBASET)     echo "AbdulBaset AbdulSamad" ;;
+    AFASY|MISHARI)  echo "Mishari Rashid Al-Afasy" ;;
+    *)              echo "$1" ;;   # passthrough — accepts any reciter the app knows
+  esac
+}
+
+resolve_surah() {
+  case "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" in
+    FATIHAH|FATIHA|1)   echo "Al-Fatihah" ;;
+    BAQARAH|2)          echo "Al-Baqarah" ;;
+    KAHF|18)            echo "Al-Kahf" ;;
+    YASEEN|YASIN|36)    echo "Yaseen" ;;
+    RAHMAN|55)          echo "Ar-Rahman" ;;
+    WAQIAH|56)          echo "Al-Waqi'ah" ;;
+    MULK|67)            echo "Al-Mulk" ;;
+    *)                  echo "$1" ;;   # passthrough — any name the app stores in surah_name array
+  esac
+}
+
+# --- commands --------------------------------------------------------------
+
+cmd_status() {
+  ensure_connected
+  echo "Device: ${FRAME}"
+  echo "Focus:  $(focus)"
+}
+
+cmd_screenshot() {
+  ensure_connected
+  shot "${1:-/tmp/athanframe_screen.png}"
+}
+
+cmd_home() {
+  ensure_connected
+  tap "${CLOSE_BTN[@]}" 0.5
+}
+
+# Broadcast-based Quran trigger (no taps).
+# Sends: am broadcast -n <pkg>/<ScheduleReceiver> --ei type 1 --es typeV <reciter> --es typeS <surah>
+# ScheduleReceiver re-emits to the local broadcast bus that MasjidDetailView listens on,
+# which calls showQuranPlayerScreen(true, reciter, surah) and starts playback immediately.
+cmd_play_quran() {
+  ensure_connected
+  local reciter; reciter="$(resolve_reciter "${1:-SUDAIS}")"
+  local surah;   surah="$(resolve_surah   "${2:-FATIHAH}")"
+
+  # The MasjidDetailView (or CalculatedDetailView) activity must be foreground
+  # for its in-process listener to be registered. Bring it forward defensively.
+  adb -s "${FRAME}" shell monkey -p "${PKG}" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
+  sleep 0.5
+
+  adb -s "${FRAME}" shell "am broadcast -n ${SCHEDULE_RECEIVER} \
+    --ei type ${ALARM_TYPE_QURAN} \
+    --es typeV '${reciter}' \
+    --es typeS '${surah}'" >/dev/null
+  echo "Triggered: ${surah} by ${reciter}"
+}
+
+# Tap-based playback controls (the QuranPlayer object has no broadcast surface).
+cmd_pause() { ensure_connected; tap "${PLAY_PAUSE[@]}" 0.3; }   # toggles play/pause
+cmd_next()  { ensure_connected; tap "${NEXT_SURAH[@]}" 0.3; }
+cmd_prev()  { ensure_connected; tap "${PREV_SURAH[@]}" 0.3; }
+
+cmd_vol_up()   { ensure_connected; for _ in $(seq 1 "${1:-3}"); do tap "${VOL_UP[@]}"   0.15; done; }
+cmd_vol_down() { ensure_connected; for _ in $(seq 1 "${1:-3}"); do tap "${VOL_DOWN[@]}" 0.15; done; }
+
+cmd_stop() {
+  ensure_connected
+  cmd_pause            # pause first so the audio cuts immediately
+  sleep 0.3
+  tap "${CLOSE_BTN[@]}" 0.5
+}
+
+usage() {
+  cat <<EOF
+athanframe — remote control for the Masjidal Athan Frame
+
+Usage: $0 <command> [args]
+
+Playback (broadcast-driven, robust):
+  play [RECITER] [SURAH]     Start Quran playback in one shot.
+                             Defaults: SUDAIS FATIHAH.
+                             Shortcuts:
+                               Reciters: SUDAIS, SHATIRI, BASFAR, ABDULBASET, AFASY
+                               Surahs:   FATIHAH, BAQARAH, KAHF, YASEEN, RAHMAN, WAQIAH, MULK
+                             Any value not in the shortcut table is passed
+                             through verbatim — use the exact display name
+                             the app shows (e.g. "Mishari Rashid Al-Afasy").
+
+Playback controls (UI taps — coordinates may need re-mapping):
+  pause                      Toggle play / pause
+  next                       Next surah
+  prev                       Previous surah
+  vol_up   [steps]           Volume up (default 3 steps)
+  vol_down [steps]           Volume down (default 3 steps)
+  stop                       Pause and close the player
+
+Utility:
+  status                     Show connection + foreground activity
+  screenshot [path]          Save a PNG (default /tmp/athanframe_screen.png)
+  home                       Close any open overlay, return to prayer-times view
+
+Env:
+  FRAME_IP    Override device IP (no default; set this or edit the script)
+
+Examples:
+  $0 play
+  $0 play SHATIRI KAHF
+  $0 play "Mishari Rashid Al-Afasy" "Ar-Rahman"
+  $0 vol_up 5
+  $0 stop
+EOF
+}
+
+case "${1:-}" in
+  status)     cmd_status ;;
+  screenshot) shift; cmd_screenshot "$@" ;;
+  home)       cmd_home ;;
+  play)       shift; cmd_play_quran "$@" ;;
+  pause)      cmd_pause ;;
+  next)       cmd_next ;;
+  prev)       cmd_prev ;;
+  vol_up)     shift; cmd_vol_up "$@" ;;
+  vol_down)   shift; cmd_vol_down "$@" ;;
+  stop)       cmd_stop ;;
+  ""|-h|--help|help) usage ;;
+  *)          echo "Unknown command: $1"; echo; usage; exit 1 ;;
+esac
