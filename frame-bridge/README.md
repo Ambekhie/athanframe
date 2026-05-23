@@ -33,6 +33,131 @@ We install a small shell-only HTTP server on the frame at `/data/local/tmp/athan
                        └──────────────────────────────────┘
 ```
 
+## End-to-end flow
+
+### Setup (one time)
+
+```
+┌──────────┐                     ┌─────────────┐
+│   Mac    │ ── adb push ──────▶ │ Athan Frame │
+│ (you)    │ ── nohup launcher │ │  (rooted    │
+└──────────┘                     │   adbd)     │
+                                 └─────────────┘
+```
+
+You run `./install-on-frame.sh` once. It:
+1. Finds the frame on the LAN (auto-discovery, or set `FRAME_IP=...`)
+2. `adb push`es 3 shell scripts + the PWA assets + catalog JSON to `/data/local/tmp/athan-bridge/`
+3. `adb shell nohup launcher.sh &` — starts the listener as root, detaches
+4. Mac walks away. Never needed again unless the frame reboots.
+
+### Persistently running on the frame
+
+```
+launcher.sh  (PID alive forever, restarts nc if it dies)
+   │
+   └── nc -p 8080 -L athan-bridge.sh
+                          │
+                          └── (spawned per HTTP connection, runs as root)
+```
+
+`launcher.sh` keeps `nc` alive. `nc -L` is "listen for **many** connections, run COMMAND for each". When a request arrives, `nc` accepts the TCP socket and spawns a fresh `athan-bridge.sh` with the socket wired to stdin/stdout. That handler reads the request from stdin and writes the response to stdout.
+
+### A single request, step by step
+
+```
+ iPhone PWA                  Athan Frame
+ ──────────                  ───────────
+    │
+    │ POST /api/play
+    │ {"reciter":"...","surah":"..."}
+    │ ─────────────────────▶  nc accepts TCP on :8080
+    │                              │
+    │                              ▼
+    │                          spawns athan-bridge.sh (uid=0, root)
+    │                              │
+    │                              ├─ read_request: parse method, path, body
+    │                              ├─ route: case "/api/play" → action_play
+    │                              ├─ json_get_str reciter / surah
+    │                              ├─ am broadcast --user 0 \
+    │                              │    -n com.masjidal.athanframe/...ScheduleReceiver \
+    │                              │    --ei type 1 --es typeV "..." --es typeS "..."
+    │                              │                  │
+    │                              │                  ▼
+    │                              │           Masjidal app receives broadcast,
+    │                              │           opens player, fetches MP3 from S3,
+    │                              │           starts playing on the frame's speaker.
+    │                              │
+    │                              ├─ respond_json "200 OK" '{"ok":true,...}'
+    │ ◀───────────────────────  nc returns the bytes, closes socket
+    │
+    │ UI updates "Now Playing"
+```
+
+### What gets served
+
+The same handler serves both the PWA *and* the control API:
+
+| Request | Handler does |
+|---|---|
+| `GET /` | `cat webapp/index.html` |
+| `GET /static/app.js`, `style.css` | `cat webapp/<file>` |
+| `GET /icon-*.png`, `/manifest.json` | `cat webapp/<file>` |
+| `GET /api/reciters` | `cat assets/reciters.json` (36 reciters, baked at build) |
+| `GET /api/surahs` | `cat assets/surahs.json` (114 canonical names) |
+| `POST /api/play` | `am broadcast` to ScheduleReceiver; persists `state.json` |
+| `POST /api/pause` | `input tap` on play/pause button (toggles current state) |
+| `POST /api/next`, `/prev` | Read `state.json`, look up neighbor in `assets/surahs.json` (with wrap-around), re-broadcast play intent. No UI taps. |
+| `POST /api/stop` | `input tap` play/pause (to pause), then `input tap` close X |
+| `POST /api/volume` `{direction, steps}` | `input keyevent KEYCODE_VOLUME_UP`/`DOWN` × steps (system media stream) |
+| `POST /api/home` | `input tap` the close button |
+| `GET /api/status` | `dumpsys window \| grep mCurrentFocus` |
+
+### Why next/prev and volume don't use UI taps
+
+The Masjidal player has **no visible next/prev buttons** — only play/pause and close. So `/api/next` and `/api/prev` work by:
+
+1. Reading the persisted `state.json` (last `{reciter, surah}` from `/api/play`)
+2. Looking up that surah's index in the bundled `assets/surahs.json`
+3. Computing the neighbour (wraps: An-Nas → Al-Fatihah, Al-Fatihah → An-Nas)
+4. Re-broadcasting the play intent with the new surah name
+
+This is more robust than UI automation would be anyway — no race with animations, no idle-state requirement, no coordinate drift if the player UI changes in a future Masjidal update.
+
+Volume similarly avoids the in-app volume slider (it's decorative — single taps on `+`/`−` don't visibly move the thumb). Instead `/api/volume` issues `KEYCODE_VOLUME_UP`/`DOWN` events to the OS, which control the `STREAM_MUSIC` volume that the player is playing on. Verified to work cleanly with `dumpsys audio | grep streamVolume`.
+
+### What the user does on their phone
+
+1. Connect to the same Wi-Fi as the frame
+2. Safari → `http://<frame-ip>:8080`
+3. Share → Add to Home Screen → tap the new icon
+4. Tap reciter → tap surah → tap play
+
+That's it. The PWA is static; all behavior lives on the frame; there's no Mac/Pi/cloud in the request path.
+
+### Where everything lives
+
+```
+On your Mac (just the source):
+  ~/repos/athanframe/frame-bridge/
+
+On the frame after install:
+  /data/local/tmp/athan-bridge/
+  ├── launcher.sh           # outer loop, keeps nc alive
+  ├── athan-bridge.sh       # per-request handler (parses HTTP, dispatches)
+  ├── launcher.pid          # PID of the launcher loop
+  ├── state.json            # last {reciter, surah} — used by next/prev
+  ├── bridge.log            # request log
+  ├── launcher.log          # nc start/restart log
+  ├── webapp/               # PWA assets (index.html, app.js, style.css, icons)
+  └── assets/               # reciter + surah catalogs (JSON)
+
+In RAM on the frame:
+  - 1 launcher.sh process (the outer while loop)
+  - 1 nc process (listening on :8080)
+  - briefly: 1 athan-bridge.sh per active request
+```
+
 ## Why this works where the Android-app approach didn't
 
 We previously tried building a Kotlin Android app to do the same thing. It hit hard security walls because Android sandboxes apps from each other — an app cannot send broadcasts to another app's non-exported receivers, nor inject input events into another app's windows. Those are signature-level permissions.

@@ -28,18 +28,20 @@ BRIDGE_ROOT="${BRIDGE_ROOT:-/data/local/tmp/athan-bridge}"
 WEBAPP="$BRIDGE_ROOT/webapp"
 ASSETS="$BRIDGE_ROOT/assets"
 LOG="$BRIDGE_ROOT/bridge.log"
+STATE="$BRIDGE_ROOT/state.json"
 
 MASJIDAL_PKG="com.masjidal.athanframe"
 RECEIVER="$MASJIDAL_PKG/$MASJIDAL_PKG.schedular.ScheduleReceiver"
 ALARM_TYPE_QURAN=1
 
-# UI coordinates (1280x800). Matches pwa-bridge/server.py.
+# UI coordinates (1280x800). Only used for taps that still work via UI:
+# play/pause and the close X. Volume now uses KEYCODE_VOLUME_UP/DOWN
+# (system media volume) instead of tapping the app's slider, which is
+# decorative and doesn't respond to single taps. Next/prev no longer
+# use taps at all — they re-broadcast the play intent with the
+# neighbouring surah from assets/surahs.json.
 COORD_PLAY_PAUSE="640 584"
-COORD_PREV="456 584"
-COORD_NEXT="824 584"
 COORD_CLOSE="1224 33"
-COORD_VOL_UP="1205 260"
-COORD_VOL_DOWN="1205 520"
 
 log() {
   # Best-effort log to disk; ignore errors so we never break the response.
@@ -142,7 +144,7 @@ json_get_str() {
 }
 
 json_get_num() {
-  printf '%s' "$BODY" | sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' | head -1
+  printf '%s' "$BODY" | sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1
 }
 
 # Shell-escape a value for safe inclusion in single quotes within `am ... 'X'`.
@@ -178,6 +180,12 @@ action_play() {
     respond_400 "reciter and surah required"
     return
   fi
+  do_play "$reciter" "$surah"
+}
+
+# do_play <reciter> <surah> — broadcast intent + persist state + respond.
+do_play() {
+  local reciter="$1" surah="$2"
   local er es
   er=$(shellesc "$reciter")
   es=$(shellesc "$surah")
@@ -186,7 +194,65 @@ action_play() {
     --ei type "$ALARM_TYPE_QURAN" \
     --es typeV "$reciter" \
     --es typeS "$surah" >/dev/null 2>&1
+  # Persist for next/prev. Reciter and surah names are JSON-safe enough
+  # (Masjidal canonical names contain no double quotes or backslashes).
+  printf '{"reciter":"%s","surah":"%s"}\n' "$reciter" "$surah" > "$STATE" 2>/dev/null
   respond_json "200 OK" "{\"ok\":true,\"playing\":{\"reciter\":\"$er\",\"surah\":\"$es\"}}"
+}
+
+# surah_at_offset <current_surah_name> <offset> — echoes the surah name at
+# (current_index + offset) in assets/surahs.json, wrapping around at the
+# ends (next of An-Nas → Al-Fatihah; prev of Al-Fatihah → An-Nas).
+# Echoes empty string if current name not found in the catalog.
+surah_at_offset() {
+  local current="$1" offset="$2"
+  awk -v cur="$current" -v off="$offset" '
+    BEGIN { count = 0 }
+    # Extract "name":"..." lines from the bundled surahs.json.
+    match($0, /"name"[[:space:]]*:[[:space:]]*"[^"]*"/) {
+      s = substr($0, RSTART, RLENGTH)
+      sub(/^"name"[[:space:]]*:[[:space:]]*"/, "", s)
+      sub(/"$/, "", s)
+      names[count] = s
+      count++
+    }
+    END {
+      if (count == 0) exit
+      for (i = 0; i < count; i++) {
+        if (names[i] == cur) {
+          # Wrap-around modulo arithmetic.
+          j = ((i + off) % count + count) % count
+          print names[j]
+          exit
+        }
+      }
+    }
+  ' "$ASSETS/surahs.json"
+}
+
+action_neighbor() {
+  # $1 = +1 (next) or -1 (prev)
+  local offset="$1"
+  if [ ! -f "$STATE" ]; then
+    respond_400 "no prior play; send /api/play first"
+    return
+  fi
+  local reciter surah next_surah saved_body
+  saved_body="$BODY"
+  BODY=$(cat "$STATE" 2>/dev/null)
+  reciter=$(json_get_str reciter)
+  surah=$(json_get_str surah)
+  BODY="$saved_body"
+  if [ -z "$reciter" ] || [ -z "$surah" ]; then
+    respond_500 "state.json is malformed"
+    return
+  fi
+  next_surah=$(surah_at_offset "$surah" "$offset")
+  if [ -z "$next_surah" ]; then
+    respond_500 "current surah '$surah' not in catalog"
+    return
+  fi
+  do_play "$reciter" "$next_surah"
 }
 
 action_tap() {
@@ -196,22 +262,22 @@ action_tap() {
 }
 
 action_volume() {
-  local dir steps coord
+  local dir steps key
   dir=$(json_get_str direction)
   steps=$(json_get_num steps)
   [ -z "$steps" ] && steps=3
   case "$dir" in
-    up)   coord="$COORD_VOL_UP" ;;
-    down) coord="$COORD_VOL_DOWN" ;;
+    up)   key="KEYCODE_VOLUME_UP" ;;
+    down) key="KEYCODE_VOLUME_DOWN" ;;
     *)    respond_400 "direction must be up or down"; return ;;
   esac
-  # Clamp 1..20
+  # Clamp 1..30
   [ "$steps" -lt 1 ]  2>/dev/null && steps=1
-  [ "$steps" -gt 20 ] 2>/dev/null && steps=20
+  [ "$steps" -gt 30 ] 2>/dev/null && steps=30
   i=0
   while [ $i -lt "$steps" ]; do
-    input tap $coord >/dev/null 2>&1
-    sleep 0.12
+    input keyevent "$key" >/dev/null 2>&1
+    sleep 0.05
     i=$((i+1))
   done
   respond_json "200 OK" "{\"ok\":true,\"direction\":\"$dir\",\"steps\":$steps}"
@@ -302,9 +368,9 @@ route() {
     "/api/pause")
       [ "$METHOD" = "POST" ] && action_tap "$COORD_PLAY_PAUSE" || respond_405; return ;;
     "/api/next")
-      [ "$METHOD" = "POST" ] && action_tap "$COORD_NEXT"       || respond_405; return ;;
+      [ "$METHOD" = "POST" ] && action_neighbor 1  || respond_405; return ;;
     "/api/prev")
-      [ "$METHOD" = "POST" ] && action_tap "$COORD_PREV"       || respond_405; return ;;
+      [ "$METHOD" = "POST" ] && action_neighbor -1 || respond_405; return ;;
     "/api/stop")
       [ "$METHOD" = "POST" ] && action_stop                    || respond_405; return ;;
     "/api/volume")
