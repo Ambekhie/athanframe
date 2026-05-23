@@ -8,8 +8,9 @@ The device is an Android 11 tablet running Masjidal's custom kiosk app. It ships
 
 | Subproject | Status | Description |
 |---|---|---|
-| [`pwa-bridge/`](./pwa-bridge/) | ✅ working | Bash CLI + Python (FastAPI) HTTP bridge + Progressive Web App. Runs on any Mac/Linux machine on the same Wi-Fi as the frame. Auto-discovers the frame's IP on first run. Phone gets a polished installable web app. **Use this.** |
-| [`android/`](./android/) | ❌ experimental, doesn't work | On-frame Android app. The HTTP server / PWA hosting works, but driving the Masjidal app from on-device is blocked by Android 11+ security on this kiosk device. See [`android/README.md`](./android/README.md) for the detailed walls hit. Kept as a learning artifact. |
+| [`frame-bridge/`](./frame-bridge/) | ✅ working | **Recommended.** A shell-only HTTP server that runs directly on the Athan Frame as root, via the frame's own `adbd`. One-time install with ADB from any Mac; after that, no host machine needed. Phone talks directly to `http://<frame-ip>:8080`. ~250 lines of shell + the same PWA. |
+| [`pwa-bridge/`](./pwa-bridge/) | ✅ working | Python (FastAPI) bridge + Progressive Web App. Runs on a Mac, Raspberry Pi, or any Linux host on the same Wi-Fi. Use this if you don't want any code running on the frame itself. |
+| [`android/`](./android/) | ❌ experimental, doesn't work | Earlier attempt at an on-frame Android APK. Blocked by Android's app-sandbox model. Kept as a learning artifact. See [`android/README.md`](./android/README.md). |
 
 Start with [`pwa-bridge/`](./pwa-bridge/) — it works today.
 
@@ -17,13 +18,13 @@ Start with [`pwa-bridge/`](./pwa-bridge/) — it works today.
 
 ```bash
 git clone https://github.com/<your-fork>/athanframe.git
-cd athanframe/pwa-bridge
-./install.sh
+cd athanframe/frame-bridge
+./install-on-frame.sh
 ```
 
-Then open the LAN URL it prints in Safari on your iPhone (same Wi-Fi), and **Share → Add to Home Screen**.
+Then open the printed URL in Safari on your iPhone (same Wi-Fi), and **Share → Add to Home Screen**. Done — no host machine to keep running.
 
-See [`pwa-bridge/README.md`](./pwa-bridge/README.md) for full details: how it works, the underlying broadcast we discovered, the HTTP API, troubleshooting.
+See [`frame-bridge/README.md`](./frame-bridge/README.md) for details, or [`pwa-bridge/README.md`](./pwa-bridge/README.md) if you'd rather run the bridge on a Mac/Pi.
 
 ## How this came to exist
 
