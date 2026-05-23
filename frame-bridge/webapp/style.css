@@ -371,10 +371,14 @@ input[type="search"]::placeholder { color: var(--muted); }
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.12s, transform 0.08s, color 0.12s;
+  transition: background 0.08s, transform 0.06s, color 0.12s;
   box-shadow: var(--shadow-1);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
-.player-btn:active { transform: scale(0.92); background: var(--cream); }
+.player-btn:active,
+.player-btn.pressed { transform: scale(0.88); background: var(--cream); }
 .player-btn.primary {
   width: 62px; height: 62px;
   background: var(--navy);
@@ -382,7 +386,8 @@ input[type="search"]::placeholder { color: var(--muted); }
   color: var(--white);
   box-shadow: 0 4px 14px rgba(22,58,120,0.32);
 }
-.player-btn.primary:active { background: var(--navy-2); }
+.player-btn.primary:active,
+.player-btn.primary.pressed { background: var(--navy-2); transform: scale(0.94); }
 
 /* Merged play/pause toggle — show exactly one icon based on data-state.
    data-state="paused"  → next tap plays  → show ▶
@@ -410,9 +415,13 @@ input[type="search"]::placeholder { color: var(--muted); }
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.12s, transform 0.08s;
+  transition: background 0.08s, transform 0.06s;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
-.vol-btn:active { transform: scale(0.92); background: var(--cream); }
+.vol-btn:active,
+.vol-btn.pressed { transform: scale(0.88); background: var(--cream); }
 .vol-bar {
   flex: 1;
   height: 6px;
@@ -420,6 +429,7 @@ input[type="search"]::placeholder { color: var(--muted); }
   border-radius: 999px;
   overflow: hidden;
 }
+.vol-fill { transition: width 0.12s ease-out; }
 .vol-fill {
   height: 100%;
   width: 60%;
@@ -533,9 +543,12 @@ input[type="search"]::placeholder { color: var(--muted); }
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.12s, transform 0.08s;
+  transition: background 0.08s, transform 0.06s;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
-.now-btn:active { transform: scale(0.92); background: var(--cream); }
+.now-btn:active,
+.now-btn.pressed { transform: scale(0.88); background: var(--cream); }
 .now-btn.primary {
   background: var(--navy);
   border-color: var(--navy);

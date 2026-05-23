@@ -59,19 +59,59 @@ async function api(path, opts = {}) {
     headers: { "Content-Type": "application/json" },
   };
   if (opts.body) init.body = JSON.stringify(opts.body);
-  setDot("busy");
+  if (!opts.silent) setDot("busy");
   try {
     const r = await fetch(`${API}${path}`, init);
     if (!r.ok) {
       const text = await r.text().catch(() => "");
       throw new Error(`HTTP ${r.status} ${text || r.statusText}`);
     }
-    setDot("connected");
+    if (!opts.silent) setDot("connected");
     return await r.json();
   } catch (e) {
     setDot("error");
     throw e;
   }
+}
+
+// Fire-and-forget control call. No spinner thrash, no awaiting; we already
+// updated the UI optimistically, the network is just confirmation.
+function apiFire(path, body) {
+  const init = {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    keepalive: true,
+  };
+  if (body) init.body = JSON.stringify(body);
+  return fetch(`${API}${path}`, init).catch(e => {
+    // Surface only network/server errors, not the optimistic action itself.
+    console.warn("control call failed:", path, e);
+    toast("Frame didn't respond", true, 1500);
+    setDot("error");
+  });
+}
+
+// Bind a handler to fire on the earliest possible touch/pointer event, so
+// the UI feels instant. Adds a `.pressed` flash and a light haptic on
+// devices that support it. Falls back to `click` for non-pointer browsers.
+function bindFastTap(el, handler) {
+  if (!el) return;
+  let fired = false;
+  const trigger = (e) => {
+    if (fired) return;
+    fired = true;
+    // Reset shortly so subsequent taps still fire; the boolean only guards
+    // against the click that follows the same pointerdown.
+    setTimeout(() => { fired = false; }, 300);
+    el.classList.add("pressed");
+    setTimeout(() => el.classList.remove("pressed"), 140);
+    if (navigator.vibrate) { try { navigator.vibrate(8); } catch {} }
+    e.preventDefault();
+    handler(e);
+  };
+  el.addEventListener("pointerdown", trigger, { passive: false });
+  // Click fallback for browsers without PointerEvent.
+  el.addEventListener("click", trigger);
 }
 
 function setDot(s)        { const el = $("#dot"); if (el) el.dataset.state = s; }
@@ -208,7 +248,7 @@ function makeIconBtn(kind, onClick, primary = false) {
     stop:  '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>',
   };
   b.innerHTML = svgs[kind] || "";
-  if (onClick) b.addEventListener("click", onClick);
+  if (onClick) bindFastTap(b, onClick);
   return b;
 }
 
@@ -377,65 +417,107 @@ async function play() {
     return;
   }
   const body = { reciter: state.selectedReciter.name, surah: state.selectedSurah.name };
-  try {
-    const r = await api("/play", { method: "POST", body });
-    state.nowPlaying = r.playing;
-    state.isPlaying = true;
-    toast(`▶ ${r.playing.surah}`);
-    renderPlayPauseButton();
-    renderNowBar();
-  } catch (e) {
-    toast(e.message, true);
-  }
-}
 
-async function togglePlayPause() {
-  // If nothing has been started yet, fire a fresh play (broadcast).
-  if (!state.nowPlaying) {
-    return play();
-  }
-  // Otherwise just toggle via the pause endpoint (UI tap).
-  try {
-    await api("/pause", { method: "POST" });
-    state.isPlaying = !state.isPlaying;
-    // Toast describes what just happened (the action that was performed).
-    toast(state.isPlaying ? "▶ playing" : "⏸ paused");
-    renderPlayPauseButton();
-    renderNowBar();
-  } catch (e) {
-    toast(e.message, true);
-  }
-}
+  // Optimistic UI: act as if it played, before the server confirms.
+  state.nowPlaying = { reciter: body.reciter, surah: body.surah };
+  state.isPlaying = true;
+  renderPlayPauseButton();
+  renderNowBar();
+  toast(`▶ ${body.surah}`);
 
-async function simple(path, label) {
   try {
-    await api(path, { method: "POST" });
-    if (label) toast(label);
+    const r = await api("/play", { method: "POST", body, silent: true });
+    if (r && r.playing) state.nowPlaying = r.playing;
   } catch (e) {
-    toast(e.message, true);
-  }
-}
-
-async function vol(direction) {
-  try {
-    await api("/volume", { method: "POST", body: { direction, steps: 2 } });
-    setVolumeFill(state.volumePct + (direction === "up" ? 8 : -8));
-  } catch (e) {
-    toast(e.message, true);
-  }
-}
-
-async function stop() {
-  try {
-    await api("/stop", { method: "POST" });
+    // Rollback on failure.
     state.nowPlaying = null;
     state.isPlaying = false;
-    toast("⏹ stopped");
     renderPlayPauseButton();
     renderNowBar();
-  } catch (e) {
     toast(e.message, true);
   }
+}
+
+function togglePlayPause() {
+  // If nothing has been started yet, fire a fresh play (broadcast).
+  if (!state.nowPlaying) {
+    play();
+    return;
+  }
+  // Flip locally now; the server tap will reach the frame momentarily.
+  state.isPlaying = !state.isPlaying;
+  renderPlayPauseButton();
+  renderNowBar();
+  apiFire("/pause");
+}
+
+function nextSurah() {
+  // Optimistic: predict the new surah from our local catalog so the user
+  // sees the title flip instantly, before the server's broadcast confirms.
+  if (state.nowPlaying && Array.isArray(state.surahs) && state.surahs.length) {
+    const idx = state.surahs.findIndex(s => s.name === state.nowPlaying.surah);
+    if (idx !== -1) {
+      const nxt = state.surahs[(idx + 1) % state.surahs.length];
+      state.nowPlaying = { reciter: state.nowPlaying.reciter, surah: nxt.name };
+      state.isPlaying = true;
+      renderPlayPauseButton();
+      renderNowBar();
+    }
+  }
+  apiFire("/next");
+}
+
+function prevSurah() {
+  if (state.nowPlaying && Array.isArray(state.surahs) && state.surahs.length) {
+    const idx = state.surahs.findIndex(s => s.name === state.nowPlaying.surah);
+    if (idx !== -1) {
+      const len = state.surahs.length;
+      const prv = state.surahs[(idx - 1 + len) % len];
+      state.nowPlaying = { reciter: state.nowPlaying.reciter, surah: prv.name };
+      state.isPlaying = true;
+      renderPlayPauseButton();
+      renderNowBar();
+    }
+  }
+  apiFire("/prev");
+}
+
+// ---- Volume: coalesce rapid taps into a single batched request ----
+const VOL_STEP_PCT = 6;       // visual delta per tap
+const VOL_FLUSH_MS = 140;     // how long to wait before sending the batch
+let _volPending = 0;          // signed integer; +N means up by N, -N means down
+let _volTimer = null;
+
+function vol(direction) {
+  // 1) Update UI immediately.
+  const delta = direction === "up" ? +1 : -1;
+  setVolumeFill(state.volumePct + delta * VOL_STEP_PCT);
+  _volPending += delta;
+
+  // 2) Coalesce: keep restarting the timer until taps stop coming, then
+  //    send one HTTP request with the summed step count.
+  clearTimeout(_volTimer);
+  _volTimer = setTimeout(flushVolume, VOL_FLUSH_MS);
+}
+
+function flushVolume() {
+  const pending = _volPending;
+  _volPending = 0;
+  _volTimer = null;
+  if (pending === 0) return;
+  const dir = pending > 0 ? "up" : "down";
+  const steps = Math.min(30, Math.abs(pending));
+  apiFire("/volume", { direction: dir, steps });
+}
+
+function stop() {
+  // Optimistic close.
+  state.nowPlaying = null;
+  state.isPlaying = false;
+  renderPlayPauseButton();
+  renderNowBar();
+  toast("⏹ stopped");
+  apiFire("/stop");
 }
 
 // ---------- Utilities ----------
@@ -452,13 +534,13 @@ function init() {
   $("#reciter-search").addEventListener("input", e => renderReciters(e.target.value));
   $("#surah-search").addEventListener("input",   e => renderSurahs(e.target.value));
 
-  // Merged play/pause toggle on the player panel
-  $("#btn-playpause").addEventListener("click", togglePlayPause);
-  $("#btn-next").addEventListener("click", () => simple("/next", "⏭"));
-  $("#btn-prev").addEventListener("click", () => simple("/prev", "⏮"));
-  $("#btn-stop").addEventListener("click", stop);
-  $("#btn-vol-up").addEventListener("click",   () => vol("up"));
-  $("#btn-vol-down").addEventListener("click", () => vol("down"));
+  // Merged play/pause toggle on the player panel — pointerdown for instant feel.
+  bindFastTap($("#btn-playpause"), togglePlayPause);
+  bindFastTap($("#btn-next"),      nextSurah);
+  bindFastTap($("#btn-prev"),      prevSurah);
+  bindFastTap($("#btn-stop"),      stop);
+  bindFastTap($("#btn-vol-up"),    () => vol("up"));
+  bindFastTap($("#btn-vol-down"),  () => vol("down"));
 
   // Quick-change shortcuts inside the player
   $("#change-reciter").addEventListener("click", () => go("reciter"));

@@ -74,10 +74,11 @@ read_request() {
     esac
   done
 
-  # Body (if any). Use dd for exact-byte read.
+  # Body (if any). One dd syscall with bs=N count=1 instead of bs=1 count=N
+  # — much faster for small JSON bodies (saves N-1 read syscalls).
   BODY=""
   if [ "$content_length" -gt 0 ] 2>/dev/null; then
-    BODY=$(dd bs=1 count="$content_length" 2>/dev/null)
+    BODY=$(dd bs="$content_length" count=1 2>/dev/null)
   fi
 }
 
@@ -274,12 +275,15 @@ action_volume() {
   # Clamp 1..30
   [ "$steps" -lt 1 ]  2>/dev/null && steps=1
   [ "$steps" -gt 30 ] 2>/dev/null && steps=30
+  # Build a single `input keyevent K K K ...` call. One JVM startup for the
+  # whole batch instead of N — on this device that's ~1.2s vs ~Nx1.2s.
+  keys=""
   i=0
   while [ $i -lt "$steps" ]; do
-    input keyevent "$key" >/dev/null 2>&1
-    sleep 0.05
+    keys="$keys $key"
     i=$((i+1))
   done
+  input keyevent $keys >/dev/null 2>&1
   respond_json "200 OK" "{\"ok\":true,\"direction\":\"$dir\",\"steps\":$steps}"
 }
 
