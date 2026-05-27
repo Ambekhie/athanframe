@@ -16,7 +16,7 @@
 #   POST /api/discover     -> no-op (we ARE the device)
 #   GET  /api/reciters     -> assets/reciters.json
 #   GET  /api/surahs       -> assets/surahs.json
-#   GET  /api/status       -> {connected, focus, playing}
+#   GET  /api/status       -> {connected, focus, playing, volume}
 #   POST /api/play         -> {reciter, surah}
 #   POST /api/pause        -> tap play/pause
 #   POST /api/next, /prev  -> tap
@@ -284,7 +284,15 @@ action_volume() {
     i=$((i+1))
   done
   input keyevent $keys >/dev/null 2>&1
-  respond_json "200 OK" "{\"ok\":true,\"direction\":\"$dir\",\"steps\":$steps}"
+  # Read back STREAM_MUSIC level so the PWA can flip its indicator
+  # immediately. Cheap relative to the input keyevent we just paid for.
+  local level max pct
+  level=$(dumpsys audio 2>/dev/null | awk '/^- STREAM_MUSIC:/{f=1} f && /streamVolume:/{split($0,a,":"); v=a[2]; gsub(/[^0-9]/,"",v); print v; exit}')
+  max=$(dumpsys audio 2>/dev/null | awk '/^- STREAM_MUSIC:/{f=1} f && /Max:/{print $2; exit}')
+  [ -z "$level" ] && level=0
+  [ -z "$max" ] || [ "$max" = "0" ] && max=15
+  pct=$(( level * 100 / max ))
+  respond_json "200 OK" "{\"ok\":true,\"direction\":\"$dir\",\"steps\":$steps,\"volume\":{\"level\":$level,\"max\":$max,\"pct\":$pct}}"
 }
 
 action_stop() {
@@ -340,7 +348,34 @@ action_status() {
       playing="{\"reciter\":\"$(shellesc "$reciter")\",\"surah\":\"$(shellesc "$surah")\"}"
     fi
   fi
-  respond_json "200 OK" "{\"connected\":$masj,\"frame\":\"on-device\",\"focus\":\"$focus\",\"on_device\":true,\"playing\":$playing}"
+  # Absolute STREAM_MUSIC level so the PWA can surface the real volume
+  # (the +/- buttons send relative KEYCODE_VOLUME_UP/DOWN keyevents; the
+  # in-app slider is decorative). Parse the dumpsys block:
+  #   - STREAM_MUSIC:
+  #      Muted: false
+  #      Max: 15
+  #      streamVolume:9
+  # Toybox awk is fine here; one shot.
+  local volume_json
+  volume_json=$(dumpsys audio 2>/dev/null | awk '
+    /^- STREAM_MUSIC:/ { in_block=1; next }
+    /^- STREAM_/ && in_block { exit }
+    in_block && /Muted:/ && !/Internally/ {
+      m = ($2 == "true") ? "true" : "false"
+    }
+    in_block && /Max:/ { max = $2 }
+    in_block && /streamVolume:/ {
+      # "streamVolume:9" — split on the colon.
+      split($0, a, ":"); v = a[2]; gsub(/[^0-9]/, "", v)
+    }
+    END {
+      if (max == "" || v == "") exit
+      pct = (max > 0) ? int((v * 100) / max) : 0
+      printf "{\"level\":%s,\"max\":%s,\"pct\":%d,\"muted\":%s}", v, max, pct, (m ? m : "false")
+    }
+  ')
+  [ -z "$volume_json" ] && volume_json="null"
+  respond_json "200 OK" "{\"connected\":$masj,\"frame\":\"on-device\",\"focus\":\"$focus\",\"on_device\":true,\"playing\":$playing,\"volume\":$volume_json}"
 }
 
 # -----------------------------------------------------------------------------

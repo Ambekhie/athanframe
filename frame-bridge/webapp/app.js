@@ -434,6 +434,14 @@ async function refreshStatus() {
       // we believe nothing is playing anyway.
       if (!state.isPlaying) state.nowPlaying = null;
     }
+    // Reconcile absolute volume from the frame. The +/- buttons send
+    // relative keyevents and Android may fold rapid presses as auto-
+    // repeat, so the actual level can drift from our optimistic guess.
+    // This keeps the slider honest and also lets the user SEE that the
+    // system volume is at 0 (a common cause of "no audio" panic).
+    if (s.volume && typeof s.volume.pct === "number" && !_volTimer) {
+      setVolumeFill(s.volume.pct);
+    }
     renderNowBar();
     renderPlayPauseButton();
   } catch {
@@ -682,7 +690,30 @@ function flushVolume() {
   if (pending === 0) return;
   const dir = pending > 0 ? "up" : "down";
   const steps = Math.min(30, Math.abs(pending));
-  apiFire("/volume", { direction: dir, steps });
+  // Use fetch directly (not apiFire) so we can read the server's
+  // post-change STREAM_MUSIC level and reconcile our optimistic
+  // slider. Android folds rapid same-key events as auto-repeat so
+  // requested-steps != actual-steps; without reconciliation the
+  // slider drifts out of sync with reality after a few taps.
+  fetch(apiUrl("/volume"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    keepalive: true,
+    body: JSON.stringify({ direction: dir, steps }),
+  })
+    .then(r => r.ok ? r.json() : null)
+    .then(j => {
+      if (j && j.volume && typeof j.volume.pct === "number") {
+        // Snap the slider to truth.
+        setVolumeFill(j.volume.pct);
+      }
+    })
+    .catch(e => {
+      console.warn("volume call failed:", e);
+      toast("Frame didn't respond", true, 1500);
+      setDot("error");
+      if (e && e.name === "TypeError") rediscoverOnce();
+    });
 }
 
 function stop() {
