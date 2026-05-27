@@ -185,6 +185,20 @@ action_play() {
 }
 
 # do_play <reciter> <surah> — broadcast intent + persist state + respond.
+#
+# Known Masjidal quirk: each play broadcast to ScheduleReceiver spawns
+# TWO concurrent MediaPlayer instances (likely an athan-call + surah
+# pair in the prayer-time flow). For Quran-only playback (type=1) this
+# manifests as overlapping audio — both players reach state:started
+# simultaneously, the play/pause UI only controls one of them. We
+# probed several workarounds:
+#   * Broadcast type=0 first to cancel: no effect.
+#   * Tap pause+play 2.5s after broadcast: briefly pauses both, then
+#     Masjidal auto-restarts the rogue from its own state machine.
+#   * Double-broadcast: 4 active instead of 2 (adds, doesn't replace).
+# Conclusion: this is enforced by Masjidal internals; we cannot
+# silence the second stream from the shell layer without modifying
+# the app. Accept it as a Masjidal-side limitation.
 do_play() {
   local reciter="$1" surah="$2"
   local er es
