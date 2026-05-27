@@ -288,9 +288,20 @@ action_volume() {
 }
 
 action_stop() {
+  # Tap pause first so audio actually stops; then tap the close X to
+  # dismiss the player UI back to the prayer-times home. Batched into
+  # a single `input tap X1 Y1 X2 Y2` would be ideal but `input tap`
+  # only accepts a single coord pair, so we pay two JVM startups.
   input tap $COORD_PLAY_PAUSE >/dev/null 2>&1
   sleep 0.3
   input tap $COORD_CLOSE >/dev/null 2>&1
+  # Clear persisted state so /api/status no longer reports a stale
+  # `playing` object. Without this, the PWA's 15s refreshStatus would
+  # repopulate state.nowPlaying, and the next tap on the merged
+  # play/pause button would route to the pause branch instead of
+  # starting a fresh broadcast.
+  rm -f "$STATE" 2>/dev/null
+  log "stop"
   respond_json "200 OK" '{"ok":true}'
 }
 

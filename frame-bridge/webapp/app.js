@@ -425,11 +425,17 @@ async function refreshStatus() {
     // Reconcile playing state from the frame so the UI shows what's
     // actually loaded — even on a fresh PWA load, or after next/prev
     // when our optimistic update was skipped (e.g. unknown surah name).
+    // Server returns playing:null after /api/stop or before any play.
     if (s.playing && s.playing.reciter && s.playing.surah) {
       state.nowPlaying = { reciter: s.playing.reciter, surah: s.playing.surah };
-      renderNowBar();
-      renderPlayPauseButton();
+    } else {
+      // Don't override an in-flight optimistic update (just after the
+      // user tapped play and we set isPlaying=true). Only clear when
+      // we believe nothing is playing anyway.
+      if (!state.isPlaying) state.nowPlaying = null;
     }
+    renderNowBar();
+    renderPlayPauseButton();
   } catch {
     setDot("error");
     setStatusText("bridge offline");
@@ -579,13 +585,29 @@ async function play() {
 }
 
 function togglePlayPause() {
-  // If nothing has been started yet, fire a fresh play (broadcast).
-  if (!state.nowPlaying) {
+  // Decision is driven by isPlaying, not nowPlaying:
+  //  - nowPlaying tells us WHAT was last loaded (may still be on screen, may
+  //    have ended, or stop may have been called server-side meanwhile).
+  //  - isPlaying tells us whether we believe audio is currently active.
+  // If we're not playing, send a fresh broadcast (play()) — even if there's
+  // a nowPlaying value. Re-broadcasting is the only reliable way to bring
+  // the player UI back; tapping the pause coord on the prayer-times home
+  // screen would land on random UI elements.
+  if (!state.isPlaying) {
+    // If we don't even have a target picked, play() will toast a hint.
+    if (state.nowPlaying && (!state.selectedReciter || !state.selectedSurah)) {
+      // Re-select what was last playing so play() can re-broadcast it.
+      const r = state.reciters.find(x => x.name === state.nowPlaying.reciter);
+      const s = state.surahs.find(x => x.name === state.nowPlaying.surah);
+      if (r) state.selectedReciter = r;
+      if (s) state.selectedSurah = s;
+    }
     play();
     return;
   }
-  // Flip locally now; the server tap will reach the frame momentarily.
-  state.isPlaying = !state.isPlaying;
+  // We believe audio is playing → pause it. Flip locally now; the server
+  // tap will reach the frame momentarily.
+  state.isPlaying = false;
   renderPlayPauseButton();
   renderNowBar();
   apiFire("/pause");
