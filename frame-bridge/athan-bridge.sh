@@ -16,7 +16,7 @@
 #   POST /api/discover     -> no-op (we ARE the device)
 #   GET  /api/reciters     -> assets/reciters.json
 #   GET  /api/surahs       -> assets/surahs.json
-#   GET  /api/status       -> {connected, focus}
+#   GET  /api/status       -> {connected, focus, playing}
 #   POST /api/play         -> {reciter, surah}
 #   POST /api/pause        -> tap play/pause
 #   POST /api/next, /prev  -> tap
@@ -309,11 +309,27 @@ action_discover() {
 }
 
 action_status() {
-  local masj focus
+  local masj focus playing reciter surah saved_body
   masj=$(has_masjidal)
   if [ "$masj" = "1" ]; then masj=true; else masj=false; fi
   focus=$(dumpsys window 2>/dev/null | grep mCurrentFocus | head -1 | sed 's/"/\\"/g' | tr -d '\r\n')
-  respond_json "200 OK" "{\"connected\":$masj,\"frame\":\"on-device\",\"focus\":\"$focus\",\"on_device\":true}"
+  # Include last-known playing state (persisted by do_play in state.json) so
+  # the PWA can reconcile its UI on load / after every action. Without this,
+  # tapping next/prev before ever having tapped play in the current PWA
+  # session leaves state.nowPlaying null and the UI never advances even
+  # though the frame does.
+  playing="null"
+  if [ -f "$STATE" ]; then
+    saved_body="$BODY"
+    BODY=$(cat "$STATE" 2>/dev/null)
+    reciter=$(json_get_str reciter)
+    surah=$(json_get_str surah)
+    BODY="$saved_body"
+    if [ -n "$reciter" ] && [ -n "$surah" ]; then
+      playing="{\"reciter\":\"$(shellesc "$reciter")\",\"surah\":\"$(shellesc "$surah")\"}"
+    fi
+  fi
+  respond_json "200 OK" "{\"connected\":$masj,\"frame\":\"on-device\",\"focus\":\"$focus\",\"on_device\":true,\"playing\":$playing}"
 }
 
 # -----------------------------------------------------------------------------

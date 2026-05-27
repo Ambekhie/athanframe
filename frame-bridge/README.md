@@ -181,15 +181,53 @@ Then on the phone (same Wi-Fi): open `http://<frame-ip>:8080` → Safari Share �
 
 ## After a frame reboot
 
-The launcher dies when the frame reboots (it lives in RAM as a process, the scripts persist in `/data/local/tmp/` across reboots). To restart, just re-run:
+**By default, nothing.** The installer drops `/system/etc/init/athan-bridge.rc`
+(and a copy in `/vendor/etc/init/`) via a one-time `adb remount`. Android's
+`init` picks that up on every subsequent boot and brings the bridge back up
+automatically — usually within 5–10 seconds of `sys.boot_completed=1`.
 
+You only need to touch the installer again if:
+- you opted out with `--no-autostart` at install time, or
+- a factory reset / OTA wiped the overlay layer that holds the `.rc` files.
+
+In either case, just rerun:
 ```bash
 ./install-on-frame.sh
 ```
+The script is idempotent — it stops any existing launcher, re-pushes any
+changed files, reinstalls the init service, and starts a fresh launcher.
 
-This is idempotent — it stops any existing launcher, re-pushes any changed files, and starts a fresh launcher. ~5 seconds.
+### What if the frame's IP changes (DHCP)?
 
-For a fully hands-off auto-start on boot, a small extra step would be needed (e.g., dropping an `init.rc` extension, or installing a tiny boot-receiver APK). Not implemented yet — manual restart after the occasional reboot is the v1 trade-off.
+The PWA handles this on its own. When a previously-working bridge stops
+answering, the app:
+1. Tries the last-known origin first (one-RTT win after most short
+   DHCP shifts where the IP returns to the same value).
+2. If that fails, scans the `/24` derived from its current host and
+   adopts the first responding bridge.
+3. Persists the new origin to `localStorage` so the next launch is a
+   single-RTT win.
+
+This means an installed home-screen PWA keeps working even after the
+frame's IP changes — no manual reconfiguration.
+
+If you want a permanently stable URL, set a **DHCP reservation** on your
+router for the frame's MAC. That sidesteps the rediscovery dance entirely
+and lets you bookmark a single IP forever.
+
+### Notes on the init.rc auto-start
+
+- It runs as `root` (same as the manual launcher), triggered on
+  `sys.boot_completed=1`.
+- The service definition uses `/system/bin/sh -c "..."` to dodge an init
+  quirk on this Rockchip Android 11 build that silently drops services
+  whose second argv path doesn't exist at boot-time parse (our launcher
+  lives under `/data/local/tmp/` which init parses before mounting `/data`).
+- The inline command waits up to a few seconds for `/data/local/tmp/athan-bridge/launcher.sh`
+  to become executable, then `exec`s it. The launcher's own `nc` respawn
+  loop takes over from there.
+- Verify on the frame: `getprop init.svc.athan-bridge` → `running`.
+- Stop: `setprop ctl.stop athan-bridge`.  Start: `setprop ctl.start athan-bridge`.
 
 ## Endpoints
 

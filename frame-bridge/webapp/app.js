@@ -1,7 +1,123 @@
 // athanframe PWA — guided 3-step flow: Reciter → Surah → Player.
-// Talks to the local FastAPI bridge at the same origin.
+// Talks to the on-frame shell bridge at the same origin by default, with
+// LAN rediscovery to survive frame IP changes (DHCP).
 
-const API = "/api";
+// `apiBase` is the absolute origin we send /api requests to. It's mutable
+// because the frame's DHCP lease can shift across reboots; if our current
+// base goes silent, discoverBridge() rescans the /24 and rewrites this.
+// Default: relative (same origin as the page). Once we discover a working
+// absolute origin, we switch to it (so an installed PWA that was opened
+// from a stale cached origin can keep functioning).
+let apiBase = "";  // empty string = use relative `/api` (same-origin)
+
+function apiUrl(path) {
+  return `${apiBase}/api${path}`;
+}
+
+// Try to remember the last working bridge across PWA reloads. We store the
+// full origin (scheme://host:port) so we can drive fetches at it even if
+// the PWA was opened from a dead origin.
+const LS_KEY_BRIDGE = "athanframe.bridgeOrigin";
+function rememberBridge(origin) {
+  try { localStorage.setItem(LS_KEY_BRIDGE, origin); } catch {}
+}
+function recallBridge() {
+  try { return localStorage.getItem(LS_KEY_BRIDGE) || ""; } catch { return ""; }
+}
+
+// Probe one candidate origin for a working bridge. Resolves to the origin
+// on success, null on failure. 700ms timeout so a full /24 scan finishes
+// in a few seconds even when most IPs are silent.
+async function probeOrigin(origin, timeoutMs = 700) {
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), timeoutMs);
+    const r = await fetch(`${origin}/api/config`, {
+      signal: ctl.signal,
+      cache: "no-store",
+    });
+    clearTimeout(t);
+    if (!r.ok) return null;
+    const cfg = await r.json().catch(() => null);
+    // Only accept bridges that look like our on-frame variant.
+    if (cfg && (cfg.on_device === true || cfg.has_frame === true)) return origin;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Last-resort LAN scan. Walks the /24 of the page's current host (or a
+// reasonable fallback) and returns the first responsive bridge origin.
+// Highly parallel to keep the worst case under ~2s on a typical /24.
+async function discoverBridge() {
+  // 1. Try last-known origin first — usually a one-RTT win after IP shift.
+  const remembered = recallBridge();
+  if (remembered) {
+    const hit = await probeOrigin(remembered, 800);
+    if (hit) return hit;
+  }
+  // 2. Try current page origin (works on every "first install" path where
+  //    the user typed http://<ip>:8080).
+  if (location.origin && location.origin !== "null") {
+    const hit = await probeOrigin(location.origin, 800);
+    if (hit) return hit;
+  }
+  // 3. Derive a scan subnet. Prefer the host of remembered/current origin;
+  //    if that's an IP, scan its /24. If host is a name (.local etc.), we
+  //    can't scan a subnet from a name, so skip.
+  const hostsToScanFrom = [
+    remembered && new URL(remembered).hostname,
+    location.hostname,
+  ].filter(Boolean);
+  for (const h of hostsToScanFrom) {
+    const m = /^(\d+\.\d+\.\d+)\.\d+$/.exec(h);
+    if (!m) continue;
+    const prefix = m[1];
+    // Parallel-probe the whole /24. AbortController fires per-request.
+    const candidates = [];
+    for (let i = 1; i <= 254; i++) candidates.push(`http://${prefix}.${i}:8080`);
+    // Race: first responder wins, others get garbage-collected by their
+    // own timeouts. We still await all to find ANY responder in case
+    // none of them race to first quickly.
+    const results = await Promise.all(candidates.map(o => probeOrigin(o, 700)));
+    const hit = results.find(Boolean);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// Switch the active bridge origin to the discovered one and persist it.
+function adoptBridge(origin) {
+  apiBase = origin;
+  rememberBridge(origin);
+  console.info("athanframe: bridge adopted at", origin);
+}
+
+// Tracks an in-flight rediscovery so concurrent failing fetches share one.
+let discoveryInFlight = null;
+async function rediscoverOnce() {
+  if (!discoveryInFlight) {
+    discoveryInFlight = (async () => {
+      try {
+        const found = await discoverBridge();
+        if (found) {
+          if (found !== apiBase) {
+            adoptBridge(found);
+            toast("Frame found at " + new URL(found).host);
+          }
+          return found;
+        }
+        return null;
+      } finally {
+        // Allow another attempt after this one settles, so a later IP
+        // change doesn't get blocked by the cached promise.
+        setTimeout(() => { discoveryInFlight = null; }, 1000);
+      }
+    })();
+  }
+  return discoveryInFlight;
+}
 
 // Steps in the main flow (about is overlay, not in flow).
 const STEPS = ["reciter", "surah", "player"];
@@ -60,17 +176,29 @@ async function api(path, opts = {}) {
   };
   if (opts.body) init.body = JSON.stringify(opts.body);
   if (!opts.silent) setDot("busy");
-  try {
-    const r = await fetch(`${API}${path}`, init);
-    if (!r.ok) {
-      const text = await r.text().catch(() => "");
-      throw new Error(`HTTP ${r.status} ${text || r.statusText}`);
+  // One-shot retry: if the current base goes silent (typical after a DHCP
+  // shift while the PWA was idle), kick off rediscovery and retry once.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await fetch(apiUrl(path), init);
+      if (!r.ok) {
+        const text = await r.text().catch(() => "");
+        throw new Error(`HTTP ${r.status} ${text || r.statusText}`);
+      }
+      if (!opts.silent) setDot("connected");
+      return await r.json();
+    } catch (e) {
+      // Only attempt rediscovery on the first failure, and only for
+      // network-level errors (TypeError from fetch). HTTP errors mean
+      // the bridge is reachable but unhappy — no point rescanning.
+      const isNetworkErr = (e && e.name === "TypeError");
+      if (attempt === 0 && isNetworkErr && opts.rediscover !== false) {
+        const found = await rediscoverOnce();
+        if (found) continue;  // retry against new base
+      }
+      setDot("error");
+      throw e;
     }
-    if (!opts.silent) setDot("connected");
-    return await r.json();
-  } catch (e) {
-    setDot("error");
-    throw e;
   }
 }
 
@@ -83,11 +211,15 @@ function apiFire(path, body) {
     keepalive: true,
   };
   if (body) init.body = JSON.stringify(body);
-  return fetch(`${API}${path}`, init).catch(e => {
+  return fetch(apiUrl(path), init).catch(e => {
     // Surface only network/server errors, not the optimistic action itself.
     console.warn("control call failed:", path, e);
     toast("Frame didn't respond", true, 1500);
     setDot("error");
+    // Background rediscovery so the NEXT tap lands on the new IP without
+    // the user noticing. We don't await — the current call is lost, but
+    // the user will tap again momentarily.
+    if (e && e.name === "TypeError") rediscoverOnce();
   });
 }
 
@@ -290,6 +422,14 @@ async function refreshStatus() {
       setDot("error");
       setStatusText("frame offline");
     }
+    // Reconcile playing state from the frame so the UI shows what's
+    // actually loaded — even on a fresh PWA load, or after next/prev
+    // when our optimistic update was skipped (e.g. unknown surah name).
+    if (s.playing && s.playing.reciter && s.playing.surah) {
+      state.nowPlaying = { reciter: s.playing.reciter, surah: s.playing.surah };
+      renderNowBar();
+      renderPlayPauseButton();
+    }
   } catch {
     setDot("error");
     setStatusText("bridge offline");
@@ -454,6 +594,7 @@ function togglePlayPause() {
 function nextSurah() {
   // Optimistic: predict the new surah from our local catalog so the user
   // sees the title flip instantly, before the server's broadcast confirms.
+  let optimistic = false;
   if (state.nowPlaying && Array.isArray(state.surahs) && state.surahs.length) {
     const idx = state.surahs.findIndex(s => s.name === state.nowPlaying.surah);
     if (idx !== -1) {
@@ -462,12 +603,20 @@ function nextSurah() {
       state.isPlaying = true;
       renderPlayPauseButton();
       renderNowBar();
+      optimistic = true;
     }
   }
   apiFire("/next");
+  // Reconcile from frame in case we couldn't predict (no nowPlaying yet,
+  // or surah name didn't match our catalog). Gives the frame ~600ms to
+  // persist the new state.json before we re-read it.
+  if (!optimistic) {
+    setTimeout(refreshStatus, 600);
+  }
 }
 
 function prevSurah() {
+  let optimistic = false;
   if (state.nowPlaying && Array.isArray(state.surahs) && state.surahs.length) {
     const idx = state.surahs.findIndex(s => s.name === state.nowPlaying.surah);
     if (idx !== -1) {
@@ -477,9 +626,13 @@ function prevSurah() {
       state.isPlaying = true;
       renderPlayPauseButton();
       renderNowBar();
+      optimistic = true;
     }
   }
   apiFire("/prev");
+  if (!optimistic) {
+    setTimeout(refreshStatus, 600);
+  }
 }
 
 // ---- Volume: coalesce rapid taps into a single batched request ----
@@ -564,8 +717,24 @@ function init() {
 // ---------- First-run setup / discovery ----------
 async function bootstrap() {
   const setup = $("#setup-overlay");
+  // Seed apiBase: if we remembered a working bridge from a previous
+  // session AND it differs from the current page origin (e.g. the user
+  // launched an installed PWA whose origin is now dead because DHCP
+  // moved the frame), prefer the remembered one. Otherwise stay
+  // same-origin and the api() rediscovery loop handles the rest.
+  const remembered = recallBridge();
+  if (remembered && remembered !== location.origin) {
+    apiBase = remembered;
+  }
   try {
     const cfg = await api("/config");
+    // Adopt whichever origin actually answered as our new base of record.
+    // If apiBase is empty (same-origin), record the page's own origin so
+    // subsequent PWA launches from a dead origin know where to retry.
+    if (cfg) {
+      const winning = apiBase || location.origin;
+      if (winning && /^https?:\/\//.test(winning)) rememberBridge(winning);
+    }
     if (cfg.has_frame) {
       setup.hidden = true;
       loadCatalog();
@@ -653,7 +822,7 @@ async function saveManualIp() {
   // Simpler: tell the user to set FRAME_IP env var if scan keeps failing.
   // For now we POST to a (future) /api/config endpoint; fall back to scan.
   try {
-    const r = await fetch(API + "/config", {
+    const r = await fetch(apiUrl("/config"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ frame_ip: ip }),

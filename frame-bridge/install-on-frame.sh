@@ -8,6 +8,11 @@
 #   ./install-on-frame.sh stop             # stop the bridge on the frame
 #   ./install-on-frame.sh uninstall        # stop + remove all files
 #
+# Flags:
+#   --no-autostart   Skip installing the init.rc service. Bridge will then
+#                    only run for the current boot; you'd need to rerun
+#                    this installer after each reboot.
+#
 # Requirements on the host:
 #   - adb (brew install --cask android-platform-tools)
 #   - optional: nmap (for auto-discovery), qrencode (for QR code)
@@ -26,6 +31,19 @@ command -v adb >/dev/null || die "adb not found. Install: brew install --cask an
 REMOTE_ROOT="/data/local/tmp/athan-bridge"
 PORT="${PORT:-8080}"
 MASJIDAL_PKG="com.masjidal.athanframe"
+INIT_RC_DST_SYSTEM="/system/etc/init/athan-bridge.rc"
+INIT_RC_DST_VENDOR="/vendor/etc/init/athan-bridge.rc"
+
+# Parse flags (--no-autostart) out of $@, leaving the action in $ACTION.
+AUTOSTART=1
+ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --no-autostart) AUTOSTART=0 ;;
+    *) ARGS+=("$arg") ;;
+  esac
+done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
 ACTION="${1:-install}"
 
 # ---------- Find the frame ----------
@@ -73,11 +91,56 @@ $ADB shell "pm list packages $MASJIDAL_PKG" 2>/dev/null | grep -q "$MASJIDAL_PKG
 
 stop_remote() {
   say "Stopping any running bridge..."
+  # If the init service is installed, ask init to stop it. This is cleaner
+  # than killing nc directly because init won't try to respawn.
+  $ADB shell "[ -f $INIT_RC_DST_SYSTEM ] && setprop ctl.stop athan-bridge 2>/dev/null || true" >/dev/null 2>&1 || true
   # Try graceful: kill launcher by pidfile
   $ADB shell "if [ -f $REMOTE_ROOT/launcher.pid ]; then kill \$(cat $REMOTE_ROOT/launcher.pid) 2>/dev/null; rm -f $REMOTE_ROOT/launcher.pid; fi" 2>/dev/null || true
   # Best-effort: kill nc on the port
   $ADB shell "pkill -f 'nc -p $PORT' 2>/dev/null; pkill -f 'launcher.sh' 2>/dev/null" 2>/dev/null || true
   sleep 0.5
+}
+
+# Install the init.rc that auto-starts the bridge on every boot.
+# Idempotent. Requires `adb remount` (overlayfs system+vendor partitions).
+#
+# Why two locations? Some Rockchip variants drop overlay changes to /system
+# during OTAs but keep /vendor, and vice versa. Having the .rc in both
+# means at least one survives any partial-wipe path.
+#
+# Why `/system/bin/sh -c "..."` in the .rc (not `sh /data/...`)?
+# Android init parses .rc files BEFORE /data is mounted, and silently drops
+# services whose 2nd argv path doesn't exist at parse time. With `-c "..."`
+# the only path init validates is /system/bin/sh which is always present.
+install_autostart() {
+  say "Installing auto-start init service..."
+  $ADB root >/dev/null 2>&1 || true
+  sleep 0.3
+  local remount_out
+  remount_out=$($ADB remount 2>&1 || true)
+  if ! printf '%s' "$remount_out" | grep -qiE 'succeed|already'; then
+    warn "remount failed: $remount_out"
+    warn "Skipping auto-start install. Bridge will run for this boot only."
+    return 1
+  fi
+  # Push to both /system and /vendor (belt and braces).
+  $ADB push athan-bridge.rc "$INIT_RC_DST_SYSTEM" >/dev/null
+  $ADB push athan-bridge.rc "$INIT_RC_DST_VENDOR" >/dev/null 2>&1 || true
+  $ADB shell "chmod 644 $INIT_RC_DST_SYSTEM $INIT_RC_DST_VENDOR 2>/dev/null" >/dev/null
+  # Best-effort SELinux labels (Permissive on this build, but consistent).
+  $ADB shell "chcon u:object_r:system_file:s0 $INIT_RC_DST_SYSTEM 2>/dev/null || true" >/dev/null
+  $ADB shell "chcon u:object_r:vendor_configs_file:s0 $INIT_RC_DST_VENDOR 2>/dev/null || true" >/dev/null
+  ok "Auto-start installed ($INIT_RC_DST_SYSTEM)"
+  return 0
+}
+
+uninstall_autostart() {
+  say "Removing auto-start init service..."
+  $ADB root >/dev/null 2>&1 || true
+  sleep 0.3
+  $ADB remount >/dev/null 2>&1 || true
+  $ADB shell "rm -f $INIT_RC_DST_SYSTEM $INIT_RC_DST_VENDOR" 2>/dev/null || true
+  ok "Auto-start removed."
 }
 
 case "$ACTION" in
@@ -88,6 +151,7 @@ case "$ACTION" in
     ;;
   uninstall|remove)
     stop_remote
+    uninstall_autostart
     say "Removing $REMOTE_ROOT..."
     $ADB shell "rm -rf $REMOTE_ROOT" 2>/dev/null
     ok "Uninstalled."
@@ -121,6 +185,16 @@ else
   ok "Bridge running on port $PORT (pid: $PIDS)"
 fi
 
+# ---------- Auto-start on boot ----------
+AUTOSTART_INSTALLED=0
+if [ "$AUTOSTART" = "1" ]; then
+  if install_autostart; then
+    AUTOSTART_INSTALLED=1
+  fi
+else
+  warn "Skipping auto-start (--no-autostart). Bridge will not return after reboot."
+fi
+
 # Quick sanity: hit /api/config
 sleep 1
 if curl -fsS -m 4 "http://$FRAME_IP:$PORT/api/config" >/dev/null 2>&1; then
@@ -147,9 +221,15 @@ echo "  iPhone:  Safari → Share → Add to Home Screen"
 echo "  Android: Chrome → ⋮ menu → Install app"
 echo
 echo "  No host machine is required after this point. The bridge"
-echo "  runs as root on the frame and survives until the next reboot."
+echo "  runs as root on the frame."
+if [ "$AUTOSTART_INSTALLED" = "1" ]; then
+  printf "  ${GREEN}Auto-start is enabled${RESET} — the bridge returns by itself\n"
+  echo "  after every reboot."
+else
+  echo "  Auto-start is NOT enabled. Re-run this installer after a reboot:"
+  echo "    ./install-on-frame.sh"
+fi
 echo
-echo "  After a frame reboot, re-run:    ./install-on-frame.sh"
 echo "  To stop without uninstalling:    ./install-on-frame.sh stop"
 echo "  To remove completely:            ./install-on-frame.sh uninstall"
 echo "──────────────────────────────────────────────────────────"
